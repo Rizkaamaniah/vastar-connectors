@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "vastar-automation",
+  "private_key_id": "57d891e608dab3d40688aa74799e75b6fa6043dd",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC7Qw7/Gf1X5C8F\nOMKod8ApqIX8j3exhoCghjB80ffMpTdFU+8ZMe8EGlzj/TbPNCzBybd9NbHQ1WYq\nblFVIlcLf9WL86Wkdvvg8v0jZRDczxG1SHk1P9Q+i4jBSILnPBlOwtN0LPYtPA1d\nSKwPj8pqfEy9tVEFA7jfHdt1sYIQikCwETpG+771NH5dDGrCOaRAcuS0Z7b2wK9G\nFZN+JJd81mttj40cIUsfLfm13SPALrrn9Q0rZy19OY6UgMUojcxoVG2p6CwBQEn0\nxhHlxWqm40Ze3N6RJOpu3+QSzX/p45iwAO6dOp5zg5h5hkzJJlOQ+XyEFIFA7LKu\nF4BuGnvhAgMBAAECggEAWMGffYT9gaeLK8/r33qmz3frTbpYUoG8PJltqPPCHjKe\nwFLYjFoQ/iJarcsKK+qAXjd0KzoEdkV3H5xbG11j4XTtK+DHPW0R1FyHY7vW4rmY\nnJJltLn0qNJs9qOeO+hN3HlWTQW0htskQHcd6mBOYetZWj9yz8wkV0gpCR8h1SFK\njKlBEe65sxwl9OgHBXoxDFHcLmoX1WSU24aZxR+oJ9AfrrBtfSx6MGyMfMQ//uTe\nJStSZOQ7wSvTMK+/LyZxAV5mz3TsYBHMBtHEwlCohiy1jqT+5RAiyZ4Jk+264P6O\nxrvjfYcjK6JZWxflMXQayPF+zb3AK3us1voHJcvHgwKBgQDgFiDTVJn1okr00Ivv\nWJrb92nK/OToNKZLVQXwGUdrug9MD6UqUsKkoSn6Wqb28Ar/b1LCKE9i/p21hXRE\nDN1f1CHTNy1cubHptH/gPCWoyOnthtwB5E3nx5fSJTqNKNj7bbhAozO7/q910cKq\npRNminO3WHkDYTfQLkBUjhkX6wKBgQDV7lyp/UypmYrv8btSj0cdHlmHW9sFpock\nejx5Mii2wM07zShhdof1J1BJAe0JzE3nSmuZHmANAgnji8JLlst1fD+wcysxA9F6\nINWylCn79EYAwqdJDta059iylkx05JdqznYax+0TKkr2+/96+6Bmly++cYCu2MOy\nNAdM6H+0YwKBgH0mnqqoo1v2ihp0ptLED6kuYx2FZGrzjLSiBbD0zVizD3wReNNM\naXz8ra8vFfTwV5QVnojlboEBZx9MK4UeEj1FAqcuN92DsIOv1YNs1DOSEmQgX5uG\n4KPEa1xogmz4FUdHHhKrk2c5dNE+l5Qqoc0xIjOR6/QhRcS1MCSJQCaFAoGAao/6\nPn67IjwmdhEecyiFjt6gUAmUVwM1jBkLaH9wwl/Vm3U9KRdG7/nuRv+bmGbZY12x\nrSrxQ2mBjYP/e3GY1WPXwcgMerThMomKiRK+uw9Zk2ViuMSYdLKMQaEWYp+/QOeo\n8vwlfodxogeyogsXQiMLGD0nkXDOQkUiYc/qVOsCgYB6tqEUxZdBGEDldnNsHHKx\n6DE40RPZ28mywL13yHQ5muFMOffqIp/4mkncZJXviaKadiPsCK5zuasZak40kt2y\nIpL+oKt1H4y04iHh1qVYsoUrO+VmMLDNt0ivsJ7l5XTIq7chjzZ3uMYDAVC4h6pe\nKXNv1ANCNtQqxFEEtCq1fw==\n-----END PRIVATE KEY-----\n",
+  "client_email": "vastar-sheets-logger@vastar-automation.iam.gserviceaccount.com",
+  "client_id": "110985270155323863963",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/vastar-sheets-logger%40vastar-automation.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
