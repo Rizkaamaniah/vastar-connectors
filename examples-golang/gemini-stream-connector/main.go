@@ -1,44 +1,37 @@
+// Gemini Stream Connector - Streaming Generate Content
+// Uses Vastar Connector SDK (Simulator + Real API Mode)
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
-	
+	"time"
 
 	vastar "github.com/fullstack-aidev/vastar-wf-connector-sdk-bin/sdk-golang"
-	ipc "github.com/fullstack-aidev/vastar-wf-connector-sdk-bin/sdk-golang/protocol"
 )
 
-////////////////////////////////////////////////////////////////////////////////
-// CONFIGURATION
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// Gemini API Types
+// =======================
+//
 
-const (
-	ConnectorName = "gemini-stream-connector"
-	BaseURL       = "https://generativelanguage.googleapis.com/v1beta"
-	DefaultModel  = "gemini-2.0-flash"
+type Part struct {
+	Text string `json:"text"`
+}
 
-	RequestTimeoutMS = 120000 // 2 menit (aman untuk workflow)
-)
-
-////////////////////////////////////////////////////////////////////////////////
-// GEMINI API CONTRACT
-////////////////////////////////////////////////////////////////////////////////
+type Content struct {
+	Role  string `json:"role"` // user | model | system
+	Parts []Part `json:"parts"`
+}
 
 type GeminiRequest struct {
-	Contents []GeminiContent `json:"contents"`
-}
-
-type GeminiContent struct {
-	Role  string       `json:"role"`
-	Parts []GeminiPart `json:"parts"`
-}
-
-type GeminiPart struct {
-	Text string `json:"text"`
+	Contents []Content `json:"contents"`
 }
 
 type GeminiStreamChunk struct {
@@ -48,141 +41,281 @@ type GeminiStreamChunk struct {
 				Text string `json:"text"`
 			} `json:"parts"`
 		} `json:"content"`
-		FinishReason string `json:"finishReason,omitempty"`
 	} `json:"candidates"`
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// CONNECTOR CORE
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// OpenAI Simulator Types
+// =======================
+//
 
-type GeminiConnector struct {
-	client *vastar.RuntimeClient
-	apiKey string
-	model  string
-	logger *log.Logger
+type OpenAIStreamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
 }
 
-func NewGeminiConnector(apiKey string) (*GeminiConnector, error) {
-	if apiKey == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY is not set")
-	}
+//
+// =======================
+// Connector Definition
+// =======================
+//
 
+type GeminiConnector struct {
+	client  *vastar.RuntimeClient
+	baseURL string
+	apiKey  string
+	model   string
+}
+
+func NewGeminiConnector(baseURL, apiKey, model string) (*GeminiConnector, error) {
 	client, err := vastar.NewRuntimeClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect runtime: %w", err)
+		return nil, fmt.Errorf("failed to create runtime client: %w", err)
 	}
 
 	return &GeminiConnector{
-		client: client,
-		apiKey: apiKey,
-		model:  DefaultModel,
-		logger: log.New(os.Stdout, "[GEMINI] ", log.LstdFlags),
+		client:  client,
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		model:   model,
 	}, nil
 }
 
 func (c *GeminiConnector) Close() error {
-	c.logger.Println("closing IPC connection")
 	return c.client.Close()
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// STREAM EXECUTION (PRODUCTION SAFE)
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// Test Connection
+// =======================
+//
 
-func (c *GeminiConnector) Execute(prompt string) error {
-	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Role: "user",
-				Parts: []GeminiPart{
-					{Text: prompt},
-				},
-			},
-		},
-	}
-
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return err
-	}
-
-	url := fmt.Sprintf(
-		"%s/models/%s:streamGenerateContent?key=%s",
-		BaseURL,
-		c.model,
-		c.apiKey,
-	)
-
-	req := vastar.POST(url).
+func (c *GeminiConnector) TestConnection() error {
+	req := vastar.POST(c.baseURL + "/test_completion").
 		WithHeader("Content-Type", "application/json").
-		WithBody(payload).
-		WithTimeout(RequestTimeoutMS)
+		WithTimeout(30_000)
 
 	resp, err := c.client.ExecuteHTTP(req)
 	if err != nil {
 		return err
 	}
 
-	if resp.ErrorClass != ipc.ErrorClassSuccess {
-		return fmt.Errorf("runtime error class: %s", resp.ErrorClass)
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Gemini mengembalikan ARRAY of stream chunks
-	var chunks []GeminiStreamChunk
-	if err := json.Unmarshal(resp.Body, &chunks); err != nil {
-		return fmt.Errorf("invalid gemini stream payload")
-	}
-
-	for _, chunk := range chunks {
-		if len(chunk.Candidates) == 0 {
-			continue
-		}
-
-		candidate := chunk.Candidates[0]
-
-		if len(candidate.Content.Parts) > 0 {
-			fmt.Print(candidate.Content.Parts[0].Text)
-		}
-
-		if candidate.FinishReason != "" {
-			break
-		}
-	}
-
-	fmt.Println()
 	return nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// MAIN ENTRYPOINT (WORKFLOW READY)
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// Streaming GenerateContent
+// =======================
+//
+
+func (c *GeminiConnector) StreamGenerateContent(req GeminiRequest) (<-chan string, <-chan error) {
+	out := make(chan string, 100)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(out)
+		defer close(errCh)
+
+		// ======================
+		// REAL GEMINI MODE
+		// ======================
+		if c.apiKey != "" {
+			body, _ := json.Marshal(req)
+
+			url := fmt.Sprintf(
+				"%s/v1beta/models/%s:streamGenerateContent?key=%s",
+				c.baseURL,
+				c.model,
+				c.apiKey,
+			)
+
+			httpReq := vastar.POST(url).
+				WithHeader("Content-Type", "application/json").
+				WithHeader("Accept", "text/event-stream").
+				WithBody(body).
+				WithTimeout(300_000)
+
+			resp, err := c.client.ExecuteHTTP(httpReq)
+			if err != nil {
+				errCh <- err
+				return
+			}
+
+			if resp.StatusCode != 200 {
+				errCh <- fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+				return
+			}
+
+			scanner := bufio.NewScanner(bytes.NewReader(resp.Body))
+			for scanner.Scan() {
+				line := scanner.Text()
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+
+				data := strings.TrimPrefix(line, "data: ")
+				var chunk GeminiStreamChunk
+				if json.Unmarshal([]byte(data), &chunk) != nil {
+					continue
+				}
+
+				for _, cand := range chunk.Candidates {
+					for _, part := range cand.Content.Parts {
+						if part.Text != "" {
+							out <- part.Text
+						}
+					}
+				}
+			}
+			return
+		}
+
+		// ======================
+		// SIMULATOR MODE
+		// ======================
+		openAIReq := map[string]interface{}{
+			"model": "gpt-4",
+			"messages": []map[string]string{
+				{"role": "user", "content": req.Contents[0].Parts[0].Text},
+			},
+			"stream": true,
+		}
+
+		body, _ := json.Marshal(openAIReq)
+
+		httpReq := vastar.POST(c.baseURL + "/v1/chat/completions").
+			WithHeader("Content-Type", "application/json").
+			WithHeader("Accept", "text/event-stream").
+			WithBody(body).
+			WithTimeout(300_000)
+
+		resp, err := c.client.ExecuteHTTP(httpReq)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		if resp.StatusCode != 200 {
+			errCh <- fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			return
+		}
+
+		scanner := bufio.NewScanner(bytes.NewReader(resp.Body))
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				return
+			}
+
+			var chunk OpenAIStreamChunk
+			if json.Unmarshal([]byte(data), &chunk) != nil {
+				continue
+			}
+
+			for _, c := range chunk.Choices {
+				if c.Delta.Content != "" {
+					out <- c.Delta.Content
+				}
+			}
+		}
+	}()
+
+	return out, errCh
+}
+
+//
+// =======================
+// Main
+// =======================
+//
 
 func main() {
+	fmt.Println("🤖 Gemini Stream Connector")
+	fmt.Println(strings.Repeat("=", 60))
+
 	apiKey := os.Getenv("GEMINI_API_KEY")
-	if apiKey == "" {
-		log.Fatal("GEMINI_API_KEY environment variable missing")
+	baseURL := os.Getenv("GEMINI_BASE_URL")
+
+	if baseURL == "" {
+		if apiKey != "" {
+			baseURL = "https://generativelanguage.googleapis.com"
+			fmt.Println("Mode  : REAL GEMINI API")
+		} else {
+			baseURL = "http://localhost:8080"
+			fmt.Println("Mode  : OPENAI SIMULATOR")
+		}
 	}
 
-	connector, err := NewGeminiConnector(apiKey)
+	fmt.Println("Base  :", baseURL)
+	fmt.Println(strings.Repeat("-", 60))
+
+	connector, err := NewGeminiConnector(baseURL, apiKey, "gemini-2.0-flash")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer connector.Close()
 
-	fmt.Println(strings.Repeat("=", 70))
-	fmt.Println("VASTAR GEMINI STREAM CONNECTOR (PRODUCTION)")
-	fmt.Println("Protocol : IPC / FlatBuffers")
-	fmt.Println("Runtime  : Managed")
-	fmt.Println(strings.Repeat("=", 70))
-
-	prompt := "Explain why enterprises prefer IPC over HTTP for workflow orchestration."
-
-	fmt.Print("🤖 Gemini: ")
-	if err := connector.Execute(prompt); err != nil {
-		log.Fatal("execution failed:", err)
+	if apiKey == "" {
+		if err := connector.TestConnection(); err != nil {
+			log.Fatal("Simulator not reachable:", err)
+		}
+		fmt.Println("Status: Simulator connected ✅")
+		fmt.Println(strings.Repeat("-", 60))
 	}
 
-	fmt.Println("\nStatus:", ipc.ErrorClassSuccess.String())
-	fmt.Println(strings.Repeat("=", 70))
+	req := GeminiRequest{
+		Contents: []Content{
+			{
+				Role: "user",
+				Parts: []Part{
+					{Text: "Explain quantum computing in simple terms."},
+				},
+			},
+		},
+	}
+
+	fmt.Println("AI Response:")
+	fmt.Println(strings.Repeat("-", 60))
+
+	start := time.Now()
+
+	chunks, errors := connector.StreamGenerateContent(req)
+	var totalChars int
+
+	for {
+		select {
+		case c, ok := <-chunks:
+			if !ok {
+				duration := time.Since(start)
+				fmt.Println()
+				fmt.Println(strings.Repeat("-", 60))
+				fmt.Printf("Completed in %v\n", duration)
+				fmt.Printf("Characters : %d\n", totalChars)
+				fmt.Println(strings.Repeat("=", 60))
+				return
+			}
+			fmt.Print(c)
+			totalChars += len(c)
+
+		case err := <-errors:
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 }

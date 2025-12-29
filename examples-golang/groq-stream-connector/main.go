@@ -1,15 +1,10 @@
-/**
- * VASTAR GROQ CONNECTOR - PRODUCTION SAFE EDITION
- * Version: 1.1.0-Stable
- *
- * NOTE:
- * - Buffered streaming (NOT real-time SSE)
- * - Fully compatible with Vastar Runtime IPC
- */
-
+// Groq Stream Connector - Streaming Chat Completions
+// Uses Vastar Connector SDK (Simulator + Real Groq API Mode)
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -18,169 +13,282 @@ import (
 	"time"
 
 	vastar "github.com/fullstack-aidev/vastar-wf-connector-sdk-bin/sdk-golang"
-	ipc "github.com/fullstack-aidev/vastar-wf-connector-sdk-bin/sdk-golang/protocol"
 )
 
-////////////////////////////////////////////////////////////////////////////////
-// CONFIGURATION
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// OpenAI-compatible Types (Groq compatible)
+// =======================
+//
 
-const (
-	GroqBaseURL      = "https://api.groq.com/openai/v1/chat/completions"
-	DefaultGroqModel = "llama-3.1-70b-versatile"
-
-	RequestTimeoutMS = 300000 // 5 menit (enterprise-safe)
-)
-
-////////////////////////////////////////////////////////////////////////////////
-// GROQ API CONTRACT
-////////////////////////////////////////////////////////////////////////////////
-
-type GroqMessage struct {
+type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-type GroqRequest struct {
-	Model       string        `json:"model"`
-	Messages    []GroqMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
-	Stream      bool          `json:"stream"`
+type ChatCompletionRequest struct {
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Stream      bool      `json:"stream"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Temperature float64   `json:"temperature,omitempty"`
 }
 
-/**
- * Groq mengembalikan ARRAY of chunks (buffered by runtime)
- */
-type GroqStreamChunk struct {
+type StreamChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
 		} `json:"delta"`
-		FinishReason *string `json:"finish_reason,omitempty"`
+		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// CONNECTOR CORE
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// Connector Definition
+// =======================
+//
 
 type GroqConnector struct {
-	client *vastar.RuntimeClient
-	apiKey string
-	logger *log.Logger
+	client  *vastar.RuntimeClient
+	baseURL string
+	apiKey  string
 }
 
-func NewGroqConnector(apiKey string) (*GroqConnector, error) {
-	if apiKey == "" {
-		return nil, fmt.Errorf("GROQ_API_KEY is not set")
-	}
-
+func NewGroqConnector(baseURL, apiKey string) (*GroqConnector, error) {
 	client, err := vastar.NewRuntimeClient()
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect runtime: %w", err)
+		return nil, fmt.Errorf("failed to create runtime client: %w", err)
 	}
 
 	return &GroqConnector{
-		client: client,
-		apiKey: apiKey,
-		logger: log.New(os.Stdout, "[GROQ] ", log.LstdFlags),
+		client:  client,
+		baseURL: baseURL,
+		apiKey:  apiKey,
 	}, nil
 }
 
 func (c *GroqConnector) Close() error {
-	c.logger.Println("closing IPC connection")
 	return c.client.Close()
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// EXECUTION (BUFFERED STREAM)
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// Test Connection (Simulator Only)
+// =======================
+//
 
-func (c *GroqConnector) Execute(prompt string) error {
-	reqBody := GroqRequest{
-		Model: DefaultGroqModel,
-		Messages: []GroqMessage{
-			{Role: "user", Content: prompt},
-		},
-		Temperature: 0.7,
-		Stream:      true,
-	}
-
-	payload, err := json.Marshal(reqBody)
-	if err != nil {
-		return err
-	}
-
-	req := vastar.POST(GroqBaseURL).
-		WithHeader("Authorization", "Bearer "+c.apiKey).
+func (c *GroqConnector) TestConnection() error {
+	req := vastar.POST(c.baseURL + "/test_completion").
 		WithHeader("Content-Type", "application/json").
-		WithBody(payload).
-		WithTimeout(RequestTimeoutMS)
+		WithTimeout(30_000)
 
 	resp, err := c.client.ExecuteHTTP(req)
 	if err != nil {
 		return err
 	}
 
-	if resp.ErrorClass != ipc.ErrorClassSuccess {
-		return fmt.Errorf("runtime error class: %s", resp.ErrorClass)
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	var chunks []GroqStreamChunk
-	if err := json.Unmarshal(resp.Body, &chunks); err != nil {
-		return fmt.Errorf("invalid groq stream payload")
-	}
-
-	for _, chunk := range chunks {
-		if len(chunk.Choices) == 0 {
-			continue
-		}
-
-		content := chunk.Choices[0].Delta.Content
-		if content != "" {
-			fmt.Print(content)
-		}
-
-		if chunk.Choices[0].FinishReason != nil {
-			break
-		}
-	}
-
-	fmt.Println()
 	return nil
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// MAIN ENTRYPOINT
-////////////////////////////////////////////////////////////////////////////////
+//
+// =======================
+// Streaming Chat Completion
+// =======================
+//
+
+func (c *GroqConnector) ChatCompletionStream(
+	req ChatCompletionRequest,
+) (<-chan string, <-chan error) {
+
+	out := make(chan string, 100)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(out)
+		defer close(errCh)
+
+		req.Stream = true
+
+		body, err := json.Marshal(req)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		httpReq := vastar.POST(c.baseURL + "/v1/chat/completions").
+			WithHeader("Content-Type", "application/json").
+			WithHeader("Accept", "text/event-stream").
+			WithBody(body).
+			WithTimeout(300_000)
+
+		if c.apiKey != "" {
+			httpReq = httpReq.WithHeader("Authorization", "Bearer "+c.apiKey)
+		}
+
+		resp, err := c.client.ExecuteHTTP(httpReq)
+		if err != nil {
+			errCh <- err
+			return
+		}
+
+		if resp.StatusCode != 200 {
+			errCh <- fmt.Errorf(
+				"unexpected status code: %d - %s",
+				resp.StatusCode,
+				string(resp.Body),
+			)
+			return
+		}
+
+		scanner := bufio.NewScanner(bytes.NewReader(resp.Body))
+		for scanner.Scan() {
+			line := scanner.Text()
+
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				return
+			}
+
+			var chunk StreamChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				continue
+			}
+
+			for _, choice := range chunk.Choices {
+				if choice.Delta.Content != "" {
+					out <- choice.Delta.Content
+				}
+				if choice.FinishReason != nil {
+					return
+				}
+			}
+		}
+
+		if err := scanner.Err(); err != nil {
+			errCh <- err
+		}
+	}()
+
+	return out, errCh
+}
+
+//
+// =======================
+// Non-streaming Helper
+// =======================
+//
+
+func (c *GroqConnector) ChatCompletion(req ChatCompletionRequest) (string, error) {
+	chunks, errs := c.ChatCompletionStream(req)
+	var full strings.Builder
+
+	for {
+		select {
+		case chunk, ok := <-chunks:
+			if !ok {
+				return full.String(), nil
+			}
+			full.WriteString(chunk)
+
+		case err := <-errs:
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+}
+
+//
+// =======================
+// Main (Mentor Style)
+// =======================
+//
 
 func main() {
+	fmt.Println("🤖 Groq Stream Connector")
+	fmt.Println(strings.Repeat("=", 60))
+
 	apiKey := os.Getenv("GROQ_API_KEY")
-	if apiKey == "" {
-		log.Fatal("GROQ_API_KEY environment variable missing")
+	baseURL := os.Getenv("GROQ_BASE_URL")
+
+	// ===== Mode Selection =====
+	if baseURL == "" {
+		if apiKey != "" {
+			baseURL = "https://api.groq.com/openai"
+			fmt.Println("Mode  : REAL GROQ API")
+		} else {
+			baseURL = "http://localhost:4545"
+			fmt.Println("Mode  : RAI SIMULATOR")
+		}
 	}
 
-	connector, err := NewGroqConnector(apiKey)
+	fmt.Println("Base  :", baseURL)
+	fmt.Println(strings.Repeat("-", 60))
+
+	connector, err := NewGroqConnector(baseURL, apiKey)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer connector.Close()
 
-	fmt.Println(strings.Repeat("=", 70))
-	fmt.Println("VASTAR GROQ CONNECTOR (PRODUCTION SAFE)")
-	fmt.Println("Execution : Buffered Stream via IPC")
-	fmt.Println("Protocol  : FlatBuffers / Runtime Managed")
-	fmt.Println(strings.Repeat("=", 70))
-
-	prompt := "Explain why low-latency IPC is important in modern workflow engines."
-
-	fmt.Print("🤖 Groq: ")
-	start := time.Now()
-
-	if err := connector.Execute(prompt); err != nil {
-		log.Fatal("execution failed:", err)
+	// ===== Simulator test =====
+	if apiKey == "" {
+		fmt.Println("Testing simulator connection...")
+		if err := connector.TestConnection(); err != nil {
+			log.Fatal("Simulator not reachable:", err)
+		}
+		fmt.Println("Simulator OK ✅")
+		fmt.Println(strings.Repeat("-", 60))
 	}
 
-	fmt.Println("Latency:", time.Since(start))
-	fmt.Println(strings.Repeat("=", 70))
+	// ===== Example: Streaming =====
+	req := ChatCompletionRequest{
+		Model: "llama-3.1-8b-instant", // bebas di simulator
+		Messages: []Message{
+			{
+				Role:    "user",
+				Content: "Explain quantum computing in simple terms.",
+			},
+		},
+		Temperature: 0.7,
+		MaxTokens:   300,
+	}
+
+	fmt.Println("AI Response:")
+	fmt.Println(strings.Repeat("-", 60))
+
+	start := time.Now()
+
+	chunks, errs := connector.ChatCompletionStream(req)
+	var chars int
+
+	for {
+		select {
+		case c, ok := <-chunks:
+			if !ok {
+				fmt.Println()
+				fmt.Println(strings.Repeat("-", 60))
+				fmt.Printf("Completed in %v\n", time.Since(start))
+				fmt.Printf("Characters : %d\n", chars)
+				fmt.Println(strings.Repeat("=", 60))
+				return
+			}
+			fmt.Print(c)
+			chars += len(c)
+
+		case err := <-errs:
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 }
